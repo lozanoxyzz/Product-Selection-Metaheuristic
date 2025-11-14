@@ -13,7 +13,7 @@ def compute_greedy_score(df: pd.DataFrame,
 
 
 def greedy_secure_filter(df: pd.DataFrame,
-                         quantile: float = 0.5,
+                         quantile: float = 0.8,
                          col_cat="category",
                          col_profit="profit",
                          col_cogs="cogs",

@@ -13,10 +13,6 @@ data = {
 
 def debug_top_k(df, k=3, col_cat="category", col_profit="profit",
                 col_cogs="cogs", col_rating="rating", col_id="product id"):
-    """
-    Prints all products per category sorted by score,
-    and highlights the top-k used by buckets.
-    """
 
     df = df.copy()
     df["_score"] = compute_greedy_score(df, col_profit, col_cogs, col_rating)
