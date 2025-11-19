@@ -10,33 +10,27 @@ def build_initial_solution(df: pd.DataFrame,
                            buckets: Dict[str, List[int]],
                            max_items: int = 6,
                            max_tries: int = 1000) -> List[int]:
-    
+    """
+    Builds an initial feasible solution:
+    - one product per category
+    - taken from the top-k list
+    """
+
     categories = list(buckets.keys())
 
-    
+    # Deterministic attempt: best item of each category
     initial = []
     for cat in categories:
-        if not buckets[cat]:
-            continue
-        initial.append(buckets[cat][0])
+        if buckets[cat]:
+            initial.append(buckets[cat][0])
 
     if len(initial) == 0 or not is_feasible(initial, df, max_items=max_items):
-        
-        best = None
+        # Random attempts until a feasible combination is found
         for _ in range(max_tries):
-            candidate = []
-            for cat in categories:
-                if not buckets[cat]:
-                    continue
-                candidate.append(random.choice(buckets[cat]))
-            if len(candidate) == 0:
-                continue
-            if is_feasible(candidate, df, max_items=max_items):
-                best = candidate
-                break
-        if best is None:
-            raise RuntimeError("No se encontró solución inicial factible.")
-        return best
+            candidate = [random.choice(buckets[cat]) for cat in categories if len(buckets[cat]) > 0]
+            if candidate and is_feasible(candidate, df, max_items=max_items):
+                return candidate
+        raise RuntimeError("Failed to build a feasible initial solution.")
 
     return initial
 
@@ -46,20 +40,31 @@ def tabu_search(df: pd.DataFrame,
                 max_items: int = 6,
                 max_iter: int = 100,
                 tabu_tenure: int = 7) -> Tuple[List[int], float, float, float]:
+    """
+    Tabu Search:
+    - solution: 6 products, one per category
+    - neighborhood: swap item within the same category
+    - objective: maximize profit
+    - candidate pool: top-k per category
+    """
 
+    # Build category → top-k candidates
     buckets = top_k_per_category(df, k=k_per_cat)
-
     categories = list(buckets.keys())
 
+    # Initial solution
     current = build_initial_solution(df, buckets, max_items=max_items)
     best = current.copy()
     best_profit, best_cogs, best_rating = selection_metrics(current, df)
 
-    
+    # Tabu list (category, product_id) → remaining iterations
     tabu: Dict[Tuple[str, int], int] = {}
 
-    print("Solución inicial:", current)
-    print(f"Profit inicial = {best_profit:.3f}, COGS = {best_cogs:.3f}, rating = {best_rating:.3f}")
+    print("Initial solution:", current)
+    print(f"Initial profit = {best_profit:.3f}, COGS = {best_cogs:.3f}, rating = {best_rating:.3f}")
+
+    # Build product → category mapping
+    id_to_cat = {row["product id"]: row["category"] for _, row in df.iterrows()}
 
     for it in range(1, max_iter + 1):
         best_neighbor = None
@@ -68,88 +73,73 @@ def tabu_search(df: pd.DataFrame,
         best_neighbor_rating = 0.0
         best_move = None  # (category, old_id, new_id)
 
-        
-        cat_to_current: Dict[str, int] = {}
-        
-        id_to_cat = {}
-        for _, row in df.iterrows():
-            id_to_cat[row["product id"]] = row["category"]
-
+        # Find current category assignment
+        cat_to_current = {}
         for pid in current:
-            cat = id_to_cat[pid]
-            cat_to_current[cat] = pid
+            cat_to_current[id_to_cat[pid]] = pid
 
-        
+        # Explore neighborhood
         for cat in categories:
             if cat not in cat_to_current:
                 continue
+
             current_pid = cat_to_current[cat]
 
-            for candidate_pid in buckets[cat]:
-                if candidate_pid == current_pid:
+            for cand_pid in buckets[cat]:
+                if cand_pid == current_pid:
                     continue
 
-                new_solution = current.copy()
-                
-                idx = new_solution.index(current_pid)
-                new_solution[idx] = candidate_pid
+                new_sol = current.copy()
+                idx = new_sol.index(current_pid)
+                new_sol[idx] = cand_pid
 
-                if not is_feasible(new_solution, df, max_items=max_items):
+                if not is_feasible(new_sol, df, max_items=max_items):
                     continue
 
-                profit, cogs, rating = selection_metrics(new_solution, df)
+                profit, cogs, rating = selection_metrics(new_sol, df)
 
-                move_is_tabu = (cat, candidate_pid) in tabu
+                # Tabu check
+                is_tabu = (cat, cand_pid) in tabu
+                if is_tabu and profit <= best_profit:
+                    continue  # tabu and not improving global best
 
-            
-                if move_is_tabu and profit <= best_profit:
-                    continue
-
-               
                 if profit > best_neighbor_profit:
+                    best_neighbor = new_sol
                     best_neighbor_profit = profit
                     best_neighbor_cogs = cogs
                     best_neighbor_rating = rating
-                    best_neighbor = new_solution
-                    best_move = (cat, current_pid, candidate_pid)
+                    best_move = (cat, current_pid, cand_pid)
 
         if best_neighbor is None:
-            print(f"Iteración {it}: sin vecinos admisibles, se detiene.")
+            print(f"Iteration {it}: no admissible neighbors, stopping.")
             break
 
-        
+        # Move to best neighbor
         current = best_neighbor
-
-    
         moved_cat, old_id, new_id = best_move
         tabu[(moved_cat, old_id)] = tabu_tenure
 
-        to_delete = []
+        # Update tabu tenures
+        to_remove = []
         for key in tabu:
             tabu[key] -= 1
             if tabu[key] <= 0:
-                to_delete.append(key)
-        for key in to_delete:
+                to_remove.append(key)
+        for key in to_remove:
             del tabu[key]
 
+        # Update global best
         if best_neighbor_profit > best_profit:
+            best = current.copy()
             best_profit = best_neighbor_profit
             best_cogs = best_neighbor_cogs
             best_rating = best_neighbor_rating
-            best = current.copy()
 
-        print(f"Iter {it:3d} | Profit actual = {best_neighbor_profit:.3f} | "
-              f"Mejor global = {best_profit:.3f} | Solución = {current}")
+        print(f"Iter {it:3d} | Current Profit = {best_neighbor_profit:.3f} | "
+              f"Best = {best_profit:.3f} | Solution = {current}")
 
-    print("\nMejor solución encontrada:", best)
-    print(f"Profit = {best_profit:.3f}, COGS = {best_cogs:.3f}, rating = {best_rating:.3f}")
+    print("\nBest solution found:", best)
+    print(f"Profit = {best_profit:.3f}, COGS = {best_cogs:.3f}, Rating = {best_rating:.3f}")
 
     return best, best_profit, best_cogs, best_rating
 
-
-if __name__ == "__main__":
-    from data_loading import load_datasets
-
-    df = load_datasets()
-    if df is not None:
-        best_sel, best_p, best_c, best_r = tabu_search(df)
